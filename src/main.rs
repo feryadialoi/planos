@@ -1,41 +1,56 @@
+mod client;
+mod daemon;
 mod hook;
 mod render;
-mod server;
+mod store;
 
 use std::io::Read;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 
-const USAGE: &str = "PlanOS: review Claude Code plans in the browser.
+const USAGE: &str = "PlanOS: plan with Claude Code in the browser.
 
 Usage:
-  planos hook      Run as a Claude Code PreToolUse hook for ExitPlanMode
-                   (reads the hook JSON on stdin, prints the decision on stdout)
+  planos hook      Run as a Claude Code hook (reads the hook JSON on stdin)
+  planos open      Open the PlanOS page
+  planos serve     Run the local service (started for you by the hooks)
+  planos status    Show whether the service is running
+  planos stop      Stop the service
   planos --version
 
 Environment:
-  PLANOS_NO_BROWSER=1   Print the review URL instead of opening a browser
-  PLANOS_URL_FILE=path  Also write the review URL to this file";
+  PLANOS_HOME=dir       State directory (default ~/.planos)
+  PLANOS_PORT=n         Service port (default 47820)
+  PLANOS_NO_BROWSER=1   Print the page URL instead of opening a browser
+  PLANOS_URL_FILE=path  Also write the page URL to this file
+
+~/.planos/config.json can set the browser:
+  {\"browser\": [\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\", \"--profile-directory=Default\"]}";
 
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        Some("hook") => match run_hook() {
-            Ok(()) => ExitCode::SUCCESS,
-            // Exit 1 is a non-blocking hook error: Claude Code shows its own
-            // plan dialog, so a PlanOS failure never strands the session.
-            Err(e) => {
-                eprintln!("PlanOS: {e:#}");
-                ExitCode::from(1)
-            }
-        },
+    let result = match std::env::args().nth(1).as_deref() {
+        Some("hook") => run_hook(),
+        Some("serve") => serve(),
+        Some("open") => open(),
+        Some("status") => status(),
+        Some("stop") => stop(),
         Some("--version" | "-V") => {
             println!("planos {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            Ok(())
         }
         _ => {
             eprintln!("{USAGE}");
-            ExitCode::from(2)
+            return ExitCode::from(2);
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        // For hooks, exit 1 is a non-blocking error: Claude Code carries on
+        // with its own dialog, so a PlanOS failure never strands a session.
+        Err(e) => {
+            eprintln!("PlanOS: {e:#}");
+            ExitCode::from(1)
         }
     }
 }
@@ -43,27 +58,46 @@ fn main() -> ExitCode {
 fn run_hook() -> Result<()> {
     let mut stdin = String::new();
     std::io::stdin().read_to_string(&mut stdin).context("read hook input")?;
-    let input: hook::HookInput = serde_json::from_str(&stdin).context("parse hook input")?;
-
-    let Some((markdown, path)) = input.plan() else {
-        eprintln!("PlanOS: no plan in the hook input, leaving it to Claude Code");
-        return Ok(());
-    };
-
-    let plan = server::Plan {
-        title: render::title(&markdown).unwrap_or_else(|| "Plan".into()),
-        path,
-        html: render::render(&markdown),
-        markdown,
-    };
-    let (review, rx) = server::Review::new(plan, server::token()?);
-    let open = std::env::var_os("PLANOS_NO_BROWSER").is_none();
-
-    let rt = tokio::runtime::Runtime::new().context("start runtime")?;
-    let submission = rt.block_on(server::run(review, rx, open))?;
-
-    if let Some(out) = hook::output(&submission, &input.tool_input) {
+    let input: serde_json::Value = serde_json::from_str(&stdin).context("parse hook input")?;
+    if let Some(out) = client::run_hook(&input)? {
         println!("{out}");
+    }
+    Ok(())
+}
+
+fn serve() -> Result<()> {
+    let home = client::home();
+    let token = client::token(&home)?;
+    let rt = tokio::runtime::Runtime::new().context("start runtime")?;
+    rt.block_on(daemon::serve(home, client::port(), token))
+}
+
+fn open() -> Result<()> {
+    let c = client::Client::new()?;
+    c.ensure()?;
+    c.open_browser(&c.url("/"));
+    Ok(())
+}
+
+fn status() -> Result<()> {
+    let c = client::Client::new()?;
+    match c.version() {
+        Some(v) => println!("PlanOS service {v} running at {}", c.base),
+        None => println!("PlanOS service is not running"),
+    }
+    Ok(())
+}
+
+fn stop() -> Result<()> {
+    let c = client::Client::new()?;
+    if c.version().is_none() {
+        println!("PlanOS service is not running");
+        return Ok(());
+    }
+    let res = ureq::post(&format!("{}/api/shutdown", c.base)).set(daemon::TOKEN_HEADER, &c.token).call();
+    match res {
+        Ok(_) => println!("PlanOS service stopped"),
+        Err(e) => anyhow::bail!("could not stop the service: {e}"),
     }
     Ok(())
 }

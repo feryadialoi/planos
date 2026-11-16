@@ -1,30 +1,20 @@
 # PlanOS
 
-Review Claude Code plans in the browser instead of the terminal.
+Plan with Claude Code in the browser, from the first draft to a checked result.
 
-When Claude finishes a plan in plan mode and calls `ExitPlanMode`, PlanOS opens the
-plan as a rendered document. Select any text (or use the `+` beside a block) to leave
-a comment, then:
+| Stage | What you get |
+|---|---|
+| Shape | The plan shows up live while Claude writes it. Claude's clarifying questions open as a form. |
+| Review | Select text and press `C` to comment, or `S` to suggest new wording. Each round shows what changed since your last comments. Threads carry across rounds: Claude answers each comment, and you resolve it or reply. Mermaid diagrams and code are rendered. |
+| Approve | Approve with the mode Claude works in next: manual, accept edits, or auto. |
+| Execute | Claude's task list and every file it touches, live. |
+| Verify | When the work looks finished, Claude writes a plan check: each step done, changed, skipped or partial. |
 
-- **Request changes**: your comments go back to Claude, which revises the plan and
-  opens a new review.
-- **Approve**: Claude leaves plan mode and starts the work.
-- **Answer in terminal**: closes the review and shows Claude Code's normal plan dialog.
+Every session is listed on one page, and nothing is lost on reload. Comments you
+write while Claude is not waiting for a review go out with your next message.
 
-Claude receives the comments in this form:
-
-```
-Plan review: 2 comments. Revise the plan and call ExitPlanMode again.
-Line numbers refer to /Users/you/.claude/plans/rate-limit.md.
-
-[1] Lines 12-14, on "migrate all tables in one transaction"
-    > Split by table. One transaction locks prod too long.
-
-[2] Line 30, on "skip tests for now"
-    > No. Add an integration test step.
-
-General: keep the rollback section.
-```
+Claude Code's own dialogs stay available: whichever you answer first, the
+terminal or the page, wins.
 
 ## Install
 
@@ -32,44 +22,45 @@ General: keep the rollback section.
 cargo install --path .          # puts `planos` in ~/.cargo/bin
 ```
 
-Then add the plugin in Claude Code:
+Then in Claude Code:
 
 ```
 /plugin marketplace add /path/to/planos
 /plugin install planos@planos
 ```
 
-To try it for one session without installing the plugin:
-
-```sh
-claude --plugin-dir /path/to/planos
-```
+Enter plan mode (`shift+tab`) and ask for a plan. `planos open` opens the page
+any time.
 
 ## How it works
 
-The plugin registers a `PreToolUse` hook on `ExitPlanMode` that runs `planos hook`.
-The hook reads the plan from the hook input, serves it on `127.0.0.1` at a random
-port, opens the browser, and blocks until you submit.
+```
+Claude Code hooks ──> planos hook ──HTTP──> planos serve (127.0.0.1:47820) <── browser
+```
 
-| Your choice | Hook output |
+- `planos hook` handles every hook and starts the local service when needed
+  (or restarts it after an upgrade). State lives in `~/.planos/sessions/`.
+- Hooks: `PermissionRequest` on `ExitPlanMode` (review and approve),
+  `PreToolUse` on `AskUserQuestion` in plan mode (questions), `PostToolUse`,
+  async (live draft, tasks, activity), `Stop` (plan check) and
+  `UserPromptSubmit` (comments queued for your next message).
+- If PlanOS fails, the hook exits 1, a non-blocking error, and Claude Code
+  carries on with its own dialog.
+- Safety: plans are rendered in Rust with raw HTML escaped, the page runs under
+  a strict Content Security Policy, and every API call needs the token in
+  `~/.planos/token` (mode 0600), sent in a header.
+
+See [docs/design.md](docs/design.md) for the design.
+
+## Configuration
+
+| Setting | Effect |
 |---|---|
-| Approve | `permissionDecision: "allow"` with `updatedInput` (required for ExitPlanMode to skip its dialog) |
-| Request changes | `permissionDecision: "deny"` with the comments as the reason |
-| Answer in terminal | nothing, so Claude Code shows its own dialog |
-
-If PlanOS fails, it exits with code 1 (a non-blocking hook error) and Claude Code
-falls back to its own dialog.
-
-Safety: markdown is rendered in Rust with raw HTML escaped, the page runs under a
-strict Content Security Policy, and every API call needs a per-review random token
-sent in a custom header.
-
-## Environment
-
-| Variable | Effect |
-|---|---|
-| `PLANOS_NO_BROWSER=1` | Print the review URL to stderr instead of opening a browser |
-| `PLANOS_URL_FILE=path` | Also write the review URL to this file |
+| `~/.planos/config.json` `{"browser": [...]}` | Command that opens the page, for example Chrome with `--profile-directory=Default` |
+| `PLANOS_HOME` | State directory (default `~/.planos`) |
+| `PLANOS_PORT` | Service port (default 47820) |
+| `PLANOS_NO_BROWSER=1` | Print the page URL instead of opening a browser |
+| `PLANOS_URL_FILE=path` | Also write the page URL to this file |
 
 ## Develop
 
@@ -77,5 +68,6 @@ sent in a custom header.
 cargo test
 ```
 
-In debug builds, `rust-embed` reads `ui/` from disk, so UI edits show on reload.
-Release builds embed `ui/` into the binary.
+In debug builds, `rust-embed` reads `ui/` from disk, so page edits show on
+reload. Release builds embed `ui/` into the binary. Mermaid is vendored under
+`ui/vendor/` (MIT, see `mermaid.LICENSE`).
