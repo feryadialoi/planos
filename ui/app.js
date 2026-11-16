@@ -464,7 +464,7 @@ function renderOutline() {
     if (h) counts.set(h, (counts.get(h) || 0) + 1);
   }
   toc.replaceChildren(...heads.map((h) => {
-    const a = el('button', { class: `toc-item${h.tagName === 'H3' ? ' sub' : ''}`, onclick: () => h.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+    const a = el('button', { class: `toc-item${h.tagName === 'H3' ? ' sub' : ''}`, onclick: () => jumpTo(h) },
       el('span', { class: 'toc-name', text: h.textContent }),
       counts.get(h) ? el('span', { class: 'tab-badge', text: String(counts.get(h)) }) : null);
     a._heading = h;
@@ -473,10 +473,44 @@ function renderOutline() {
   markCurrentSection();
 }
 
+// A clicked section stays current until you scroll yourself: the last
+// sections of a plan can't scroll up to the top, so position alone can't tell.
+let pinnedHeading = null;
+
+function jumpTo(h) {
+  pinnedHeading = h;
+  markCurrentSection();
+  h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function unpinSection() {
+  if (pinnedHeading) {
+    pinnedHeading = null;
+    markCurrentSection();
+  }
+}
+window.addEventListener('wheel', unpinSection, { passive: true });
+window.addEventListener('touchstart', unpinSection, { passive: true });
+document.addEventListener('keydown', (e) => {
+  if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) unpinSection();
+});
+document.addEventListener('mousedown', (e) => {
+  if (!e.target.closest('#toc')) unpinSection();
+});
+
 function markCurrentSection() {
   const items = [...$('toc').querySelectorAll('.toc-item')];
-  let current = items[0];
-  for (const a of items) if (a._heading.getBoundingClientRect().top < 140) current = a;
+  let current = items.find((a) => a._heading === pinnedHeading);
+  if (!current) {
+    // At the bottom of the page, the last headings never reach the top line;
+    // count any heading visible above the decision bar instead.
+    const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+    const bar = $('decide');
+    const visibleBottom = bar.hidden ? window.innerHeight : bar.getBoundingClientRect().top;
+    const line = atBottom ? visibleBottom - 20 : 140;
+    current = items[0];
+    for (const a of items) if (a._heading.getBoundingClientRect().top < line) current = a;
+  }
   items.forEach((a) => a.setAttribute('aria-current', String(a === current)));
 }
 
