@@ -61,13 +61,20 @@ pub fn render(md: &str) -> String {
     out
 }
 
-/// First markdown heading in the plan, used as the page title.
+/// Plain text of the first heading in the plan, used as the page title.
 pub fn title(md: &str) -> Option<String> {
-    md.lines()
-        .map(str::trim_start)
-        .find(|l| l.starts_with('#'))
-        .map(|l| l.trim_start_matches('#').trim().to_string())
-        .filter(|t| !t.is_empty())
+    let mut in_heading = false;
+    let mut text = String::new();
+    for event in Parser::new(md) {
+        match event {
+            Event::Start(Tag::Heading { .. }) => in_heading = true,
+            Event::End(TagEnd::Heading(_)) => break,
+            Event::Text(t) | Event::Code(t) if in_heading => text.push_str(&t),
+            _ => {}
+        }
+    }
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 fn raw(s: String) -> Event<'static> {
@@ -170,6 +177,10 @@ mod tests {
     #[test]
     fn title_is_first_heading() {
         assert_eq!(title("intro\n# Plan: ship it\n## x").as_deref(), Some("Plan: ship it"));
+        assert_eq!(
+            title("# Plan: `planos open <file.md>` **now**").as_deref(),
+            Some("Plan: planos open <file.md> now")
+        );
         assert_eq!(title("no heading"), None);
     }
 }

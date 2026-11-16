@@ -3,45 +3,81 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>PlanOS</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
-  <header class="top">
-    <div class="brand">Plan<span>OS</span></div>
-    <div class="meta">
-      <div id="title" class="title">Loading plan…</div>
-      <div id="path" class="path"></div>
-    </div>
-    <div id="count" class="count" hidden></div>
-  </header>
-
-  <main class="layout">
-    <article id="doc" class="doc" aria-label="Plan"></article>
-    <aside id="rail" class="rail" aria-label="Comments">
-      <p id="hint" class="hint">Select any text to comment on it, or use the <b>+</b> beside a block.</p>
+  <div class="shell">
+    <aside class="side" aria-label="Navigation">
+      <div class="brand">
+        <img class="brand-mark" src="/assets/favicon.svg" alt="">
+        <span>PlanOS</span>
+      </div>
+      <div class="side-group">
+        <h2>Outline</h2>
+        <nav id="toc" aria-label="Outline"></nav>
+      </div>
+      <div class="side-foot">
+        <span class="status-dot warn"></span>
+        <span id="status">Claude is waiting</span>
+        <span class="spacer"></span>
+        <button id="theme" class="icon-btn" title="Switch light and dark" aria-label="Switch light and dark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+        </button>
+      </div>
     </aside>
-  </main>
 
-  <footer class="bar">
-    <textarea id="general" rows="1" placeholder="Overall comment for Claude (optional)"></textarea>
+    <div class="main">
+      <header class="head">
+        <div class="head-top">
+          <h1 id="title">Plan review</h1>
+          <span id="path" class="scope-code"></span>
+        </div>
+        <div class="stats">
+          <div id="stat-comments" class="stat"><div class="stat-value" id="n-comments">0</div><div class="stat-label">Comments</div></div>
+          <div class="stat"><div class="stat-value" id="n-sections">0</div><div class="stat-label">Sections</div></div>
+          <div class="stat"><div class="stat-value" id="n-lines">0</div><div class="stat-label">Plan lines</div></div>
+        </div>
+      </header>
+
+      <div class="body">
+        <article id="doc" class="doc md" aria-label="Plan"><div class="loading">Loading plan…</div></article>
+        <aside id="rail" class="rail" aria-label="Comments">
+          <div id="hint" class="hint">
+            <h3>How to review</h3>
+            <div class="hint-row"><span>Select text, then press</span><kbd>C</kbd></div>
+            <div class="hint-row"><span>Comment on a whole block</span><kbd>+</kbd></div>
+            <div class="hint-row"><span>Save a comment</span><kbd>⌘ ↵</kbd></div>
+            <div class="hint-row"><span>Cancel</span><kbd>Esc</kbd></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <footer class="decide" aria-label="Decision">
+    <textarea id="general" rows="1" placeholder="Overall note for Claude (optional)"></textarea>
     <div class="actions">
-      <button id="terminal" class="ghost" title="Close this page and answer in Claude Code's terminal dialog">Answer in terminal</button>
-      <button id="changes" class="secondary" disabled>Request changes</button>
-      <button id="approve" class="primary">Approve</button>
+      <button id="terminal" class="btn ghost" title="Close this page and answer in Claude Code's own dialog">Answer in terminal</button>
+      <button id="changes" class="btn" disabled>Request changes <span id="count" class="tab-badge" hidden></span></button>
+      <button id="approve" class="btn primary">Approve plan</button>
     </div>
   </footer>
 
-  <button id="selbtn" class="selbtn" hidden>Comment</button>
-  <button id="gutter" class="gutter" hidden aria-label="Comment on this block">+</button>
+  <button id="selbtn" class="selbtn" hidden>Comment <kbd>C</kbd></button>
+  <button id="gutter" class="gutter" hidden aria-label="Comment on this block">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
+  </button>
 
   <div id="done" class="done" hidden>
     <div class="done-card">
-      <div id="done-title" class="done-title"></div>
+      <span id="done-pill" class="pill"></span>
+      <h2 id="done-title"></h2>
       <p id="done-text"></p>
-      <p class="muted">You can close this tab.</p>
+      <p class="help">You can close this tab.</p>
     </div>
   </div>
 </body>
