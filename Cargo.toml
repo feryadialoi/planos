@@ -1,18 +1,20 @@
 [package]
 name = "planos"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["query"] }
 getrandom = "0.4.3"
 mime_guess = "2.0.5"
 pulldown-cmark = "0.13.6"
 rust-embed = "8.14.0"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+similar = "3.2.1"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "sync", "signal", "time"] }
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 http-body-util = "0.1.5"

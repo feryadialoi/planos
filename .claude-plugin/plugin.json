@@ -1,5 +1,5 @@
 {
   "name": "planos",
-  "description": "Review Claude Code plans in the browser: rendered markdown, select-and-comment, then approve or send the comments back to Claude.",
-  "version": "0.1.0"
+  "description": "Plan with Claude Code in the browser: live drafts, review threads with diffs, questions, approve with a mode, execution tracking and a plan check.",
+  "version": "0.2.0"
 }

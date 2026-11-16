@@ -1,106 +1,141 @@
-//! Claude Code hook I/O: the PreToolUse input for ExitPlanMode, and the
-//! decision PlanOS writes back.
+//! What PlanOS writes back to Claude Code for each hook event, and the
+//! review text Claude reads.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
-pub struct HookInput {
-    #[serde(default)]
-    pub tool_input: Value,
-}
+use crate::store::Comment;
 
-impl HookInput {
-    /// Plan markdown and its file path. Claude Code injects `plan`; the file is
-    /// the fallback when it is missing.
-    pub fn plan(&self) -> Option<(String, Option<String>)> {
-        let path = self.tool_input["planFilePath"].as_str().map(str::to_string);
-        let text = match self.tool_input["plan"].as_str() {
-            Some(p) if !p.trim().is_empty() => p.to_string(),
-            _ => std::fs::read_to_string(path.as_deref()?).ok()?,
-        };
-        Some((text, path))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Comment {
-    pub start_line: usize,
-    pub end_line: usize,
-    pub quote: String,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// The browser's answer to a waiting hook.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
-pub enum Submission {
-    Approve,
-    Changes {
-        #[serde(default)]
-        comments: Vec<Comment>,
-        #[serde(default)]
-        general: String,
-    },
-    /// Hand the decision back to Claude Code's own terminal dialog.
+pub enum Decision {
+    /// Approve the plan and switch to `mode` (default, acceptEdits, auto).
+    Approve { mode: String },
+    /// Send review feedback; Claude revises.
+    Changes { feedback: String },
+    /// Answers to AskUserQuestion, keyed by question text.
+    Answers { answers: serde_json::Map<String, Value> },
+    /// Leave it to Claude Code's own terminal dialog.
     Terminal,
 }
 
-/// The JSON to print on stdout, or `None` to print nothing so Claude Code
-/// falls back to its normal plan dialog.
-pub fn output(sub: &Submission, tool_input: &Value) -> Option<Value> {
-    match sub {
-        // ExitPlanMode only skips the prompt when `allow` carries updatedInput.
-        Submission::Approve => Some(json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": "Plan approved in PlanOS",
-                "updatedInput": tool_input,
-            }
-        })),
-        Submission::Changes { comments, general } => {
-            let path = tool_input["planFilePath"].as_str();
+pub const MODES: [&str; 3] = ["default", "acceptEdits", "auto"];
+
+/// Output for the ExitPlanMode PermissionRequest hook.
+pub fn review_output(d: &Decision, tool_input: &Value) -> Option<Value> {
+    match d {
+        // ExitPlanMode needs updatedInput with allow; setMode picks the mode
+        // Claude works in after approval.
+        Decision::Approve { mode } => {
+            let mode = if MODES.contains(&mode.as_str()) { mode.as_str() } else { "default" };
             Some(json!({
                 "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": feedback(comments, general, path),
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "allow",
+                        "updatedInput": tool_input,
+                        "updatedPermissions": [{ "type": "setMode", "mode": mode, "destination": "session" }],
+                    }
                 }
             }))
         }
-        Submission::Terminal => None,
+        Decision::Changes { feedback } => Some(json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": { "behavior": "deny", "message": feedback },
+            }
+        })),
+        Decision::Answers { .. } | Decision::Terminal => None,
     }
 }
 
+/// Output for the AskUserQuestion PreToolUse hook.
+pub fn ask_output(d: &Decision, tool_input: &Value) -> Option<Value> {
+    let Decision::Answers { answers } = d else { return None };
+    let mut input = tool_input.clone();
+    input["answers"] = Value::Object(answers.clone());
+    Some(json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "Answered in PlanOS",
+            "updatedInput": input,
+        }
+    }))
+}
+
+/// Context added to a hook without blocking (Stop, UserPromptSubmit).
+pub fn context_output(event: &str, text: &str) -> Value {
+    json!({ "hookSpecificOutput": { "hookEventName": event, "additionalContext": text } })
+}
+
+pub const REPORT_REQUEST: &str = "PlanOS: the approved plan looks finished. Before you stop, end your reply with a \
+\"## Plan check\" section: one line per step of the approved plan, written as \
+\"- [done] step: note\", using done, changed, skipped or partial. Be honest about anything not done.";
+
 /// The review as Claude reads it.
-pub fn feedback(comments: &[Comment], general: &str, plan_path: Option<&str>) -> String {
-    let mut out = match comments.len() {
-        0 => "Plan review: changes requested.".to_string(),
-        1 => "Plan review: 1 comment.".to_string(),
-        n => format!("Plan review: {n} comments."),
+pub fn feedback(new: &[Comment], follow: &[(Comment, String)], general: &str, plan_path: Option<&str>) -> String {
+    let mut head = vec![];
+    match new.len() {
+        0 => {}
+        1 => head.push("1 comment".to_string()),
+        n => head.push(format!("{n} comments")),
+    }
+    match follow.len() {
+        0 => {}
+        1 => head.push("1 follow-up".to_string()),
+        n => head.push(format!("{n} follow-ups")),
+    }
+    let mut out = if head.is_empty() {
+        "Plan review: changes requested.".to_string()
+    } else {
+        format!("Plan review: {}.", head.join(", "))
     };
     out.push_str(" Revise the plan and call ExitPlanMode again.\n");
-    if let Some(p) = plan_path.filter(|_| !comments.is_empty()) {
+    if let Some(p) = plan_path.filter(|_| !new.is_empty()) {
         out.push_str(&format!("Line numbers refer to {p}.\n"));
     }
 
-    for (i, c) in comments.iter().enumerate() {
+    for c in new {
         let lines = match (c.start_line, c.end_line) {
             (0, _) => String::new(),
             (s, e) if e <= s => format!("Line {s}, "),
             (s, e) => format!("Lines {s}-{e}, "),
         };
-        out.push_str(&format!("\n[{}] {lines}on \"{}\"\n", i + 1, short_quote(&c.quote)));
-        for line in c.text.trim().lines() {
-            out.push_str(&format!("    > {line}\n"));
+        let what = if c.suggestion.is_some() { "suggested edit on" } else { "on" };
+        out.push_str(&format!("\n[{}] {lines}{what} \"{}\"\n", c.id, short_quote(&c.quote)));
+        if let Some(first) = c.messages.first() {
+            quote_lines(&mut out, &first.text);
+        }
+        if let Some(s) = &c.suggestion {
+            out.push_str(&format!("    Replace with: {}\n", s.trim()));
         }
     }
+    for (c, reply) in follow {
+        out.push_str(&format!("\n[{}] Follow-up on \"{}\"\n", c.id, short_quote(&c.quote)));
+        quote_lines(&mut out, reply);
+    }
 
-    let general = general.trim();
     if !general.is_empty() {
         out.push_str(&format!("\nGeneral: {general}\n"));
     }
+    let ids: Vec<&str> = new.iter().map(|c| c.id.as_str()).chain(follow.iter().map(|(c, _)| c.id.as_str())).collect();
+    if !ids.is_empty() {
+        out.push_str(&format!(
+            "\nEnd the revised plan with a \"## Review replies\" section, one line per comment ({}), \
+             written as \"- {}: what you changed, or why you did not\".\n",
+            ids.join(", "),
+            ids[0]
+        ));
+    }
     out
+}
+
+fn quote_lines(out: &mut String, text: &str) {
+    for line in text.trim().lines() {
+        out.push_str(&format!("    > {line}\n"));
+    }
 }
 
 fn short_quote(q: &str) -> String {
@@ -113,21 +148,46 @@ fn short_quote(q: &str) -> String {
     format!("{}...", cut.trim_end())
 }
 
+/// One-line summary of a tool call for the activity feed.
+pub fn activity_summary(tool: &str, input: &Value) -> Option<String> {
+    let s = |k: &str| input[k].as_str().map(str::to_string);
+    let text = match tool {
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Read" => s("file_path").or(s("notebook_path"))?,
+        "Bash" => s("description").or(s("command"))?,
+        "Grep" | "Glob" => s("pattern")?,
+        "WebFetch" => s("url")?,
+        "WebSearch" => s("query")?,
+        "Agent" | "Task" => s("description")?,
+        _ => return None,
+    };
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(if flat.chars().count() > 140 { format!("{}...", flat.chars().take(140).collect::<String>()) } else { flat })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::{Author, CommentState, Message};
 
-    fn c(s: usize, e: usize, quote: &str, text: &str) -> Comment {
-        Comment { start_line: s, end_line: e, quote: quote.into(), text: text.into() }
+    fn c(id: &str, s: usize, e: usize, quote: &str, text: &str) -> Comment {
+        Comment {
+            id: id.into(),
+            state: CommentState::Open,
+            start_line: s,
+            end_line: e,
+            quote: quote.into(),
+            suggestion: None,
+            messages: vec![Message { author: Author::You, text: text.into(), round: 1 }],
+            reply_draft: None,
+            outdated: false,
+        }
     }
 
     #[test]
-    fn feedback_lists_each_comment_with_lines_and_quote() {
+    fn feedback_lists_comments_with_ids_and_asks_for_replies() {
         let got = feedback(
-            &[
-                c(12, 14, "migrate all tables\nin one transaction", "Split by table.\nLocks prod."),
-                c(30, 30, "skip tests for now", "No. Add an integration test step."),
-            ],
+            &[c("c1", 12, 14, "migrate all tables\nin one transaction", "Split by table.\nLocks prod."), c("c2", 30, 30, "skip tests", "No.")],
+            &[],
             "keep the rollback section",
             Some("/p/plan.md"),
         );
@@ -135,69 +195,65 @@ mod tests {
             got,
             "Plan review: 2 comments. Revise the plan and call ExitPlanMode again.\n\
              Line numbers refer to /p/plan.md.\n\
-             \n[1] Lines 12-14, on \"migrate all tables in one transaction\"\n    > Split by table.\n    > Locks prod.\n\
-             \n[2] Line 30, on \"skip tests for now\"\n    > No. Add an integration test step.\n\
-             \nGeneral: keep the rollback section\n"
+             \n[c1] Lines 12-14, on \"migrate all tables in one transaction\"\n    > Split by table.\n    > Locks prod.\n\
+             \n[c2] Line 30, on \"skip tests\"\n    > No.\n\
+             \nGeneral: keep the rollback section\n\
+             \nEnd the revised plan with a \"## Review replies\" section, one line per comment (c1, c2), \
+             written as \"- c1: what you changed, or why you did not\".\n"
         );
     }
 
     #[test]
-    fn general_only_feedback() {
-        let got = feedback(&[], "too big, split it", Some("/p/plan.md"));
-        assert_eq!(
-            got,
-            "Plan review: changes requested. Revise the plan and call ExitPlanMode again.\n\
-             \nGeneral: too big, split it\n"
-        );
+    fn general_only_feedback_has_no_reply_instruction() {
+        let got = feedback(&[], &[], "too big, split it", Some("/p/plan.md"));
+        assert_eq!(got, "Plan review: changes requested. Revise the plan and call ExitPlanMode again.\n\nGeneral: too big, split it\n");
     }
 
     #[test]
-    fn long_quotes_are_shortened() {
-        let q = "word ".repeat(60);
-        let got = short_quote(&q);
-        assert!(got.ends_with("..."));
-        assert!(got.chars().count() <= 123);
-    }
-
-    #[test]
-    fn approve_echoes_tool_input_as_updated_input() {
+    fn approve_sets_mode_and_echoes_input() {
         let input = json!({"plan": "# P", "planFilePath": "/p.md"});
-        let out = output(&Submission::Approve, &input).unwrap();
-        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "allow");
-        assert_eq!(out["hookSpecificOutput"]["updatedInput"], input);
+        let out = review_output(&Decision::Approve { mode: "acceptEdits".into() }, &input).unwrap();
+        let d = &out["hookSpecificOutput"]["decision"];
+        assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
+        assert_eq!(d["behavior"], "allow");
+        assert_eq!(d["updatedInput"], input);
+        assert_eq!(d["updatedPermissions"][0], json!({"type": "setMode", "mode": "acceptEdits", "destination": "session"}));
+        let out = review_output(&Decision::Approve { mode: "bypassPermissions".into() }, &input).unwrap();
+        assert_eq!(out["hookSpecificOutput"]["decision"]["updatedPermissions"][0]["mode"], "default");
     }
 
     #[test]
-    fn changes_deny_with_feedback_and_terminal_prints_nothing() {
-        let input = json!({"plan": "# P", "planFilePath": "/p.md"});
-        let sub = Submission::Changes { comments: vec![c(1, 1, "P", "rename")], general: String::new() };
-        let out = output(&sub, &input).unwrap();
-        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert!(out["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("> rename"));
-        assert!(output(&Submission::Terminal, &input).is_none());
+    fn changes_deny_and_terminal_prints_nothing() {
+        let out = review_output(&Decision::Changes { feedback: "fix it".into() }, &json!({})).unwrap();
+        assert_eq!(out["hookSpecificOutput"]["decision"], json!({"behavior": "deny", "message": "fix it"}));
+        assert!(review_output(&Decision::Terminal, &json!({})).is_none());
     }
 
     #[test]
-    fn submission_parses_from_ui_json() {
-        let s: Submission = serde_json::from_str(
-            r#"{"decision":"changes","comments":[{"start_line":2,"end_line":3,"quote":"q","text":"t"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(s, Submission::Changes { comments: vec![c(2, 3, "q", "t")], general: String::new() });
-        let s: Submission = serde_json::from_str(r#"{"decision":"approve"}"#).unwrap();
-        assert_eq!(s, Submission::Approve);
+    fn answers_go_into_updated_input() {
+        let input = json!({"questions": [{"question": "Which DB?"}]});
+        let mut answers = serde_json::Map::new();
+        answers.insert("Which DB?".into(), json!("Postgres"));
+        let out = ask_output(&Decision::Answers { answers }, &input).unwrap();
+        let h = &out["hookSpecificOutput"];
+        assert_eq!(h["permissionDecision"], "allow");
+        assert_eq!(h["updatedInput"]["answers"]["Which DB?"], "Postgres");
+        assert_eq!(h["updatedInput"]["questions"], input["questions"]);
+        assert!(ask_output(&Decision::Terminal, &input).is_none());
     }
 
     #[test]
-    fn plan_falls_back_to_file() {
-        let dir = std::env::temp_dir().join(format!("planos-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("plan.md");
-        std::fs::write(&f, "# From file").unwrap();
-        let input = HookInput { tool_input: json!({"planFilePath": f.to_str().unwrap()}) };
-        assert_eq!(input.plan().unwrap().0, "# From file");
-        let empty = HookInput { tool_input: json!({}) };
-        assert!(empty.plan().is_none());
-        std::fs::remove_dir_all(dir).unwrap();
+    fn decisions_parse_from_ui_json() {
+        let d: Decision = serde_json::from_str(r#"{"decision":"approve","mode":"auto"}"#).unwrap();
+        assert_eq!(d, Decision::Approve { mode: "auto".into() });
+        let d: Decision = serde_json::from_str(r#"{"decision":"terminal"}"#).unwrap();
+        assert_eq!(d, Decision::Terminal);
+    }
+
+    #[test]
+    fn activity_summaries() {
+        assert_eq!(activity_summary("Edit", &json!({"file_path": "/a/b.rs"})).as_deref(), Some("/a/b.rs"));
+        assert_eq!(activity_summary("Bash", &json!({"command": "ls", "description": "List files"})).as_deref(), Some("List files"));
+        assert!(activity_summary("TodoWrite", &json!({})).is_none());
     }
 }

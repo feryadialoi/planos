@@ -15,7 +15,9 @@ pub fn render(md: &str) -> String {
     let mut events: Vec<Event> = Vec::new();
     for (event, range) in Parser::new_ext(md, opts).into_offset_iter() {
         let attr = || {
-            let (s, e) = lines.span(range.start, range.end);
+            // A block's range can run into the blank lines after it; they are not its lines.
+            let end = range.start + md[range.clone()].trim_end().len();
+            let (s, e) = lines.span(range.start, end);
             format!(r#" data-s="{s}" data-e="{e}""#)
         };
         match event {
@@ -150,6 +152,13 @@ mod tests {
                 r#"<li data-s="4" data-e="4""#,
             ]
         );
+    }
+
+    #[test]
+    fn last_list_item_does_not_claim_the_blank_line_after_it() {
+        let md = "## Steps\n1. one\n2. two\n\n## Next\n";
+        let html = render(md);
+        assert_eq!(attr(&html, "li"), [r#"<li data-s="2" data-e="2""#, r#"<li data-s="3" data-e="3""#]);
     }
 
     #[test]

@@ -1,12 +1,32 @@
 {
-  "description": "PlanOS: open each ExitPlanMode plan in the browser for review",
+  "description": "PlanOS: plan with Claude Code in the browser, from draft to plan check",
   "hooks": {
-    "PreToolUse": [
+    "PermissionRequest": [
       {
         "matcher": "ExitPlanMode",
-        "hooks": [
-          { "type": "command", "command": "planos hook", "timeout": 86400 }
-        ]
+        "hooks": [{ "type": "command", "command": "planos hook", "timeout": 86400 }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [{ "type": "command", "command": "planos hook", "timeout": 86400 }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "planos hook", "async": true }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "planos hook", "timeout": 10 }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "command", "command": "planos hook", "timeout": 10 }]
       }
     ]
   }
