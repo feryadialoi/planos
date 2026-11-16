@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PlanOS</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Plan<span>OS</span></div>
+    <div class="meta">
+      <div id="title" class="title">Loading plan…</div>
+      <div id="path" class="path"></div>
+    </div>
+    <div id="count" class="count" hidden></div>
+  </header>
+
+  <main class="layout">
+    <article id="doc" class="doc" aria-label="Plan"></article>
+    <aside id="rail" class="rail" aria-label="Comments">
+      <p id="hint" class="hint">Select any text to comment on it, or use the <b>+</b> beside a block.</p>
+    </aside>
+  </main>
+
+  <footer class="bar">
+    <textarea id="general" rows="1" placeholder="Overall comment for Claude (optional)"></textarea>
+    <div class="actions">
+      <button id="terminal" class="ghost" title="Close this page and answer in Claude Code's terminal dialog">Answer in terminal</button>
+      <button id="changes" class="secondary" disabled>Request changes</button>
+      <button id="approve" class="primary">Approve</button>
+    </div>
+  </footer>
+
+  <button id="selbtn" class="selbtn" hidden>Comment</button>
+  <button id="gutter" class="gutter" hidden aria-label="Comment on this block">+</button>
+
+  <div id="done" class="done" hidden>
+    <div class="done-card">
+      <div id="done-title" class="done-title"></div>
+      <p id="done-text"></p>
+      <p class="muted">You can close this tab.</p>
+    </div>
+  </div>
+</body>
+</html>

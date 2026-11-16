@@ -1,0 +1,13 @@
+{
+  "description": "PlanOS: open each ExitPlanMode plan in the browser for review",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          { "type": "command", "command": "planos hook", "timeout": 86400 }
+        ]
+      }
+    ]
+  }
+}

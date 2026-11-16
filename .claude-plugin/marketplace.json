@@ -1,0 +1,11 @@
+{
+  "name": "planos",
+  "owner": { "name": "planos" },
+  "plugins": [
+    {
+      "name": "planos",
+      "source": "./",
+      "description": "Review Claude Code plans in the browser with inline comments."
+    }
+  ]
+}
