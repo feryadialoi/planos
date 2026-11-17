@@ -379,14 +379,21 @@ impl Session {
         self.touch();
     }
 
-    /// The Stop hook asks for a plan check once the approved work looks done.
+    /// The Stop hook asks for a plan check once the approved work looks done:
+    /// Claude changed something (an edit or a command) and no task is open.
+    /// A turn that ends right after approval, for example to ask before
+    /// starting, gets no plan check.
     pub fn wants_report(&self) -> bool {
         self.status == Status::Executing
             && !self.report_requested
             && self.report.is_none()
+            && self.activity.iter().any(|a| WORK_TOOLS.contains(&a.tool.as_str()))
             && (self.todos.is_empty() || self.todos.iter().all(|t| t.status == "completed" || t.status == "deleted"))
     }
 }
+
+/// Tool calls that count as work done on the approved plan.
+const WORK_TOOLS: [&str; 5] = ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"];
 
 fn first_str(values: &[&Value]) -> Option<String> {
     values.iter().find_map(|v| match v {
@@ -711,6 +718,11 @@ mod tests {
     fn report_is_requested_once_work_looks_done() {
         let mut s = Session::new("s", "/");
         s.status = Status::Executing;
+        assert!(!s.wants_report(), "no plan check when Claude stops right after approval");
+        s.record_activity("Read", "src/main.rs".into());
+        assert!(!s.wants_report(), "reading is not work done");
+        s.record_activity("Edit", "src/main.rs".into());
+        assert!(s.wants_report(), "an edit with no task list counts as done");
         s.todos = vec![Todo { id: "1".into(), text: "a".into(), status: "in_progress".into() }];
         assert!(!s.wants_report());
         s.todos[0].status = "completed".into();
