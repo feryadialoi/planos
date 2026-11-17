@@ -1,5 +1,5 @@
 {
   "name": "planos",
   "description": "Plan with Claude Code in the browser: live drafts, review threads with diffs, questions, approve with a mode, execution tracking and a plan check.",
-  "version": "0.2.1"
+  "version": "0.2.2"
 }
