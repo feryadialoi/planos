@@ -79,6 +79,15 @@ install() {
 case "${1:-}" in
   "") install ;;
   --uninstall) uninstall ;;
-  -h|--help) sed -n '2,7p' "${BASH_SOURCE[0]:-/dev/null}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help)
+    cat <<EOF
+Install or remove PlanOS: the planos binary and the Claude Code plugin.
+
+  ./install.sh               from a clone: build this checkout
+  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash
+                             without a clone: build from GitHub
+  ./install.sh --uninstall   remove the plugin, the marketplace and the binary
+EOF
+    ;;
   *) die "unknown option: $1 (use --uninstall or --help)" ;;
 esac
