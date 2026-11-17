@@ -18,19 +18,44 @@ terminal or the page, wins.
 
 ## Install
 
+Needs [Rust](https://rustup.rs) 1.85 or newer and Claude Code.
+
+**One line, no clone:**
+
 ```sh
-cargo install --path .          # puts `planos` in ~/.cargo/bin
+curl -fsSL https://raw.githubusercontent.com/feryadialoi/planos/main/install.sh | bash
 ```
 
-Then in Claude Code:
+**From a clone:**
 
-```
-/plugin marketplace add /path/to/planos
-/plugin install planos@planos
+```sh
+git clone https://github.com/feryadialoi/planos && cd planos
+./install.sh
 ```
 
-Enter plan mode (`shift+tab`) and ask for a plan. `planos open` opens the page
-any time.
+The script builds `planos` into `~/.cargo/bin`, adds the `planos` marketplace
+to Claude Code and installs the `planos@planos` plugin. Run it again to
+upgrade.
+
+**By hand**, if you prefer:
+
+```sh
+cargo install --locked --git https://github.com/feryadialoi/planos
+claude plugin marketplace add feryadialoi/planos
+claude plugin install planos@planos
+```
+
+Then restart Claude Code (or run `/reload-plugins`), enter plan mode
+(`shift+tab`) and ask for a plan. `planos open` opens the page any time.
+
+**Uninstall:**
+
+```sh
+./install.sh --uninstall     # or: curl -fsSL .../install.sh | bash -s -- --uninstall
+```
+
+This removes the plugin, the marketplace and the binary. Saved plans stay in
+`~/.planos`; delete that folder to remove them too.
 
 ## How it works
 
