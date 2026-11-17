@@ -48,6 +48,8 @@ struct Inner {
     decisions: HashMap<u64, Decision>,
     /// Last poll from each waiting hook, by request id.
     waiting: HashMap<u64, Instant>,
+    /// Long-polls in flight, by request id. A request with one is alive.
+    polls: HashMap<u64, usize>,
     /// Last poll from a page, by session id ("*" for the dashboard).
     viewers: HashMap<String, Instant>,
     next_request: u64,
@@ -59,7 +61,7 @@ impl App {
         let (version, _) = watch::channel(1);
         Ok(Arc::new(Self {
             token,
-            store: Mutex::new(Inner { store, decisions: HashMap::new(), waiting: HashMap::new(), viewers: HashMap::new(), next_request: now_ms() }),
+            store: Mutex::new(Inner { store, decisions: HashMap::new(), waiting: HashMap::new(), polls: HashMap::new(), viewers: HashMap::new(), next_request: now_ms() }),
             version,
         }))
     }
@@ -102,7 +104,7 @@ impl App {
             .values()
             .filter_map(|s| {
                 let p = s.pending.as_ref()?;
-                if only.is_some_and(|rid| rid != p.id()) {
+                if only.is_some_and(|rid| rid != p.id()) || inner.polls.get(&p.id()).is_some_and(|n| *n > 0) {
                     return None;
                 }
                 let dead = match inner.waiting.get(&p.id()) {
@@ -275,11 +277,21 @@ const REPOLL_GRACE: Duration = Duration::from_secs(3);
 
 impl Drop for PollEnd {
     fn drop(&mut self) {
-        if self.decided {
-            return;
-        }
-        let (app, rid) = (self.app.clone(), self.rid);
+        let (app, rid, decided) = (self.app.clone(), self.rid, self.decided);
         tokio::spawn(async move {
+            {
+                let mut g = app.store.lock().await;
+                if let Some(n) = g.polls.get_mut(&rid) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        g.polls.remove(&rid);
+                    }
+                }
+            }
+            if decided {
+                return;
+            }
+            // Cleared only if the hook has not polled again by then.
             tokio::time::sleep(REPOLL_GRACE).await;
             app.drop_idle(Some(rid), REPOLL_GRACE).await;
         });
@@ -290,6 +302,7 @@ async fn hook_wait(State(app): State<Arc<App>>, headers: HeaderMap, Path(rid): P
     guard!(app, headers);
     let mut rx = app.version.subscribe();
     let deadline = tokio::time::Instant::now() + POLL;
+    *app.store.lock().await.polls.entry(rid).or_default() += 1;
     let mut end = PollEnd { app: app.clone(), rid, decided: false };
     loop {
         {
@@ -836,6 +849,26 @@ mod tests {
         let (_, s) = call(&app, "GET", "/api/s/s4?v=0", Value::Null).await;
         assert!(s["session"]["pending"].is_null());
         assert_eq!(s["session"]["status"], "drafting");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_polls_again_keeps_its_review() {
+        let (app, dir) = app();
+        let (_, v) = call(&app, "POST", "/api/hook/review", json!({"session_id": "s5", "cwd": "/p", "tool_input": {}, "plan": "# P\n"})).await;
+        let rid = v["request_id"].as_u64().unwrap();
+        let poll = |app: Arc<App>| tokio::spawn(async move { call(&app, "GET", &format!("/api/hook/wait/{rid}"), Value::Null).await });
+        // One poll ends (a timeout) while the hook's next poll is in flight,
+        // and nothing changes for longer than the grace period.
+        let first = poll(app.clone());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let second = poll(app.clone());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        first.abort();
+        tokio::time::sleep(REPOLL_GRACE + Duration::from_millis(600)).await;
+        let (_, s) = call(&app, "GET", "/api/s/s5?v=0", Value::Null).await;
+        assert_eq!(s["session"]["status"], "review", "a hook that is still polling keeps its review");
+        second.abort();
         let _ = std::fs::remove_dir_all(dir);
     }
 
