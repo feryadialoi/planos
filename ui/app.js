@@ -64,6 +64,83 @@ function el(tag, attrs, ...kids) {
   return n;
 }
 
+// Light markdown for comment text: fenced code, bullet and numbered lists,
+// inline code, bold and italic. Built as DOM nodes, never innerHTML, so
+// whatever is typed stays text.
+function inlineMd(text) {
+  const out = [];
+  const re = /`([^`\n]+)`|\*\*([^*\n]+?)\*\*|__([^_\n]+?)__|\*([^*\n]+?)\*|(?<![\w])_([^_\n]+?)_(?![\w])/g;
+  let last = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1] !== undefined) out.push(el('code', { text: m[1] }));
+    else if (m[2] !== undefined || m[3] !== undefined) out.push(el('strong', {}, ...inlineMd(m[2] ?? m[3])));
+    else out.push(el('em', {}, ...inlineMd(m[4] ?? m[5])));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function noteMd(text, cls = 'note-text') {
+  const root = el('div', `${cls} note-md`);
+  const lines = (text || '').replace(/\r\n?/g, '\n').split('\n');
+  let para = [];
+  let list = null;
+  const flushPara = () => {
+    if (!para.length) return;
+    const p = el('p');
+    para.forEach((l, i) => {
+      if (i) p.append(el('br'));
+      p.append(...inlineMd(l));
+    });
+    root.append(p);
+    para = [];
+  };
+  const flushList = () => {
+    if (list) root.append(list.node);
+    list = null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^\s*(```|~~~)\s*([\w+-]*)\s*$/);
+    if (fence) {
+      flushPara();
+      flushList();
+      const body = [];
+      for (i++; i < lines.length && !lines[i].trim().startsWith(fence[1]); i++) body.push(lines[i]);
+      root.append(el('pre', fence[2] ? { 'data-lang': fence[2] } : {}, el('code', { text: body.join('\n') })));
+      continue;
+    }
+    const item = line.match(/^\s*(?:([-*+])|(\d+)[.)])\s+(.*)$/);
+    if (item) {
+      flushPara();
+      const tag = item[1] ? 'ul' : 'ol';
+      if (!list || list.tag !== tag) {
+        flushList();
+        list = { tag, node: el(tag, tag === 'ol' && item[2] !== '1' ? { start: item[2] } : {}) };
+      }
+      list.node.append(el('li', {}, ...inlineMd(item[3])));
+      continue;
+    }
+    if (!line.trim()) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    if (list && /^\s{2,}\S/.test(line)) {
+      // An indented line continues the last list item.
+      list.node.lastChild.append(el('br'), ...inlineMd(line.trim()));
+      continue;
+    }
+    flushList();
+    para.push(line);
+  }
+  flushPara();
+  flushList();
+  return root;
+}
+
 function toast(text, bad) {
   const t = el('div', bad ? 'toast bad' : 'toast', text);
   $('toasts').append(t);
@@ -148,7 +225,7 @@ async function poll() {
       setConnected(true);
       state.version = data.version;
       if (state.route.view === 'session') applySession(data);
-      else applySessions(data.sessions);
+      else applySessions(data.sessions, data.focus);
     } catch (e) {
       if (my !== state.pollToken) return;
       failures++;
@@ -184,8 +261,36 @@ const STATUS_LABEL = {
   done: ['Done', 'current'],
 };
 
-function applySessions(list) {
+// ---------- bringing the page forward ----------
+
+// When Claude asks while this tab is in the background, a desktop
+// notification brings it to the front. `"focus": false` in
+// ~/.planos/config.json turns it off.
+const announced = new Set(); // "session:request" already seen
+let askedPermission = false;
+document.addEventListener('pointerdown', () => {
+  if (askedPermission || state.focus === false || !('Notification' in window) || Notification.permission !== 'default') return;
+  askedPermission = true;
+  Notification.requestPermission().catch(() => {});
+});
+
+function announce(sid, request, kind, title) {
+  const key = `${sid}:${request}`;
+  if (announced.has(key)) return;
+  announced.add(key);
+  if (state.focus === false || document.hasFocus() || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const n = new Notification(kind === 'question' ? 'Claude is asking you' : 'Claude presented a plan', { body: title, tag: `planos-${sid}` });
+  n.onclick = () => {
+    window.focus();
+    n.close();
+    if (state.route.id !== sid) location.hash = `#/s/${sid}`;
+  };
+}
+
+function applySessions(list, focus) {
   state.sessions = list;
+  state.focus = focus;
+  for (const s of list) if (s.request) announce(s.id, s.request, s.waiting, s.title);
   const waiting = list.filter((s) => s.waiting).length;
   const badge = $('nav-waiting');
   badge.hidden = !waiting;
@@ -244,6 +349,8 @@ function applySession(data) {
   if (state.viewRound === null) state.doc = data.doc;
   $('nav-all').removeAttribute('aria-current');
   const s = state.session;
+  state.focus = data.focus;
+  if (s.pending) announce(s.id, s.pending.id, s.pending.kind, s.title);
   document.title = `${s.pending ? '● ' : ''}${s.title} · PlanOS`;
 
   // Lay out the page once; later updates touch only what changed.
@@ -707,7 +814,7 @@ function threadCard(c) {
       if (!m.text) continue;
       card.append(el('div', `msg ${m.author}`,
         el('div', 'msg-head', el('span', { class: `avatar ${m.author}`, text: m.author === 'claude' ? 'C' : 'Y' }), el('span', { class: 'who', text: m.author === 'claude' ? 'Claude' : 'You' }), el('span', { class: 'help', text: `round ${Math.max(1, m.round)}` })),
-        el('div', { class: 'note-text', text: m.text })));
+        noteMd(m.text)));
     }
     if (c.state === 'open') card.append(replyBox(c));
   }
@@ -784,7 +891,7 @@ function composerCard() {
     setTimeout(() => grow(rep), 0);
   }
   card.append(ta);
-  const tip = el('span', 'help', el('kbd', { text: '⌘ ↵' }), ' to save');
+  const tip = el('span', 'help', el('kbd', { text: '⌘ ↵' }), ' to save · markdown works');
   card.append(el('div', 'card-actions', tip,
     el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeComposer }),
     el('button', { class: 'btn primary', text: d.editingId ? 'Save' : 'Comment', onclick: saveComposer })));
@@ -946,7 +1053,8 @@ function renderQuestion() {
       el('label', 'option',
         el('input', { type: q.multiSelect ? 'checkbox' : 'radio', name, value: o.label }),
         el('span', 'option-body', el('span', { class: 'option-label', text: o.label }), o.description ? el('span', { class: 'option-desc', text: o.description }) : null)));
-    const other = el('input', { type: 'text', class: 'other', name: `${name}-other`, placeholder: 'Other (type your own answer)' });
+    const other = el('textarea', { class: 'other', name: `${name}-other`, rows: 1, placeholder: 'Other (type your own answer)' });
+    other.addEventListener('input', () => grow(other));
     form.append(el('fieldset', 'question',
       el('legend', {}, q.header ? el('span', { class: 'pill past', text: q.header }) : null, el('span', { class: 'question-text', text: q.question })),
       el('div', 'options', ...opts),
@@ -962,7 +1070,7 @@ function renderQuestion() {
     const answers = {};
     for (const [i, q] of questions.entries()) {
       const picked = [...form.querySelectorAll(`input[name="q${i}"]:checked`)].map((x) => x.value);
-      const other = form.querySelector(`input[name="q${i}-other"]`).value.trim();
+      const other = form.querySelector(`textarea[name="q${i}-other"]`).value.trim();
       if (other) picked.push(other);
       if (!picked.length) {
         toast(`Answer: ${q.question}`, true);

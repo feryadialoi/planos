@@ -39,13 +39,15 @@ const VIEWER: Duration = Duration::from_secs(10);
 
 pub struct App {
     pub token: String,
+    home: PathBuf,
     store: Mutex<Inner>,
     version: watch::Sender<u64>,
 }
 
 struct Inner {
     store: Store,
-    decisions: HashMap<u64, Decision>,
+    /// Decisions for waiting hooks, by request id, and whether the page made them.
+    decisions: HashMap<u64, (Decision, bool)>,
     /// Last poll from each waiting hook, by request id.
     waiting: HashMap<u64, Instant>,
     /// Long-polls in flight, by request id. A request with one is alive.
@@ -61,6 +63,7 @@ impl App {
         let (version, _) = watch::channel(1);
         Ok(Arc::new(Self {
             token,
+            home: home.to_path_buf(),
             store: Mutex::new(Inner { store, decisions: HashMap::new(), waiting: HashMap::new(), polls: HashMap::new(), viewers: HashMap::new(), next_request: now_ms() }),
             version,
         }))
@@ -249,7 +252,7 @@ impl Inner {
     fn settle_elsewhere(&mut self, sid: &str) -> bool {
         let Some(s) = self.store.sessions.get_mut(sid) else { return false };
         let Some(p) = s.pending.take() else { return false };
-        self.decisions.insert(p.id(), Decision::Terminal);
+        self.decisions.insert(p.id(), (Decision::Terminal, false));
         self.waiting.remove(&p.id());
         if s.status == Status::Review {
             s.status = Status::Drafting;
@@ -307,10 +310,13 @@ async fn hook_wait(State(app): State<Arc<App>>, headers: HeaderMap, Path(rid): P
     loop {
         {
             let mut g = app.store.lock().await;
-            if let Some(d) = g.decisions.remove(&rid) {
+            if let Some((d, from_page)) = g.decisions.remove(&rid) {
                 g.waiting.remove(&rid);
                 end.decided = true;
-                return Json(d).into_response();
+                // `from_page` tells the hook to bring the terminal forward.
+                let mut v = serde_json::to_value(&d).unwrap_or(Value::Null);
+                v["from_page"] = Value::Bool(from_page);
+                return Json(v).into_response();
             }
             let alive = g.store.sessions.values().any(|s| s.pending.as_ref().is_some_and(|p| p.id() == rid));
             if !alive {
@@ -455,7 +461,7 @@ async fn sessions(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Que
     g.viewers.insert("*".into(), Instant::now());
     let mut list: Vec<Value> = g.store.sessions.values().map(summary).collect();
     list.sort_by_key(|s| std::cmp::Reverse(s["updated_at"].as_u64().unwrap_or(0)));
-    Json(json!({ "version": v, "sessions": list })).into_response()
+    Json(json!({ "version": v, "sessions": list, "focus": crate::client::focus_enabled(&app.home) })).into_response()
 }
 
 fn summary(s: &Session) -> Value {
@@ -468,6 +474,7 @@ fn summary(s: &Session) -> Value {
         "rounds": s.rounds.len(),
         "open_comments": s.comments.iter().filter(|c| c.state != CommentState::Resolved).count(),
         "waiting": s.pending.as_ref().map(|p| match p { Pending::Review { .. } => "review", Pending::Question { .. } => "question" }),
+        "request": s.pending.as_ref().map(Pending::id),
         "todos_done": s.todos.iter().filter(|t| t.status == "completed").count(),
         "todos": s.todos.len(),
     })
@@ -479,7 +486,7 @@ async fn session(State(app): State<Arc<App>>, headers: HeaderMap, Path(id): Path
     let mut g = app.store.lock().await;
     g.viewers.insert(id.clone(), Instant::now());
     let Some(s) = g.store.sessions.get(&id) else { return err(StatusCode::NOT_FOUND, "no such session") };
-    Json(json!({ "version": v, "session": s, "doc": doc_view(s) })).into_response()
+    Json(json!({ "version": v, "session": s, "doc": doc_view(s), "focus": crate::client::focus_enabled(&app.home) })).into_response()
 }
 
 /// The document the page shows now: the latest round, or the live draft.
@@ -641,7 +648,7 @@ async fn decide(State(app): State<Arc<App>>, headers: HeaderMap, Path(id): Path<
             s.todos.clear();
             s.activity.clear();
             s.pending = None;
-            inner.decisions.insert(rid, Decision::Approve { mode });
+            inner.decisions.insert(rid, (Decision::Approve { mode }, true));
             json!({ "sent": "approve" })
         }
         (UiDecision::Changes { general }, Some(Pending::Review { id: rid, .. })) => {
@@ -650,7 +657,7 @@ async fn decide(State(app): State<Arc<App>>, headers: HeaderMap, Path(id): Path<
             };
             s.status = Status::Revising;
             s.pending = None;
-            inner.decisions.insert(rid, Decision::Changes { feedback });
+            inner.decisions.insert(rid, (Decision::Changes { feedback }, true));
             json!({ "sent": "changes" })
         }
         (UiDecision::Changes { general }, _) => {
@@ -665,7 +672,7 @@ async fn decide(State(app): State<Arc<App>>, headers: HeaderMap, Path(id): Path<
         }
         (UiDecision::Answers { answers }, Some(Pending::Question { id: rid, .. })) => {
             s.pending = None;
-            inner.decisions.insert(rid, Decision::Answers { answers });
+            inner.decisions.insert(rid, (Decision::Answers { answers }, true));
             json!({ "sent": "answers" })
         }
         (UiDecision::Terminal, Some(p)) => {
@@ -673,7 +680,7 @@ async fn decide(State(app): State<Arc<App>>, headers: HeaderMap, Path(id): Path<
                 s.status = Status::Drafting;
             }
             s.pending = None;
-            inner.decisions.insert(p.id(), Decision::Terminal);
+            inner.decisions.insert(p.id(), (Decision::Terminal, true));
             json!({ "sent": "terminal" })
         }
         _ => return err(StatusCode::CONFLICT, "Claude is not waiting for that"),
@@ -780,7 +787,7 @@ mod tests {
 
         let (_, _) = call(&app, "POST", "/api/s/s1/decide", json!({"decision": "approve", "mode": "acceptEdits"})).await;
         let (_, d) = call(&app, "GET", &format!("/api/hook/wait/{rid2}"), Value::Null).await;
-        assert_eq!(d, json!({"decision": "approve", "mode": "acceptEdits"}));
+        assert_eq!(d, json!({"decision": "approve", "mode": "acceptEdits", "from_page": true}));
 
         // Executing: tool events become todos and activity.
         call(&app, "POST", "/api/hook/event", json!({"session_id": "s1", "tool_name": "Edit", "tool_input": {"file_path": "/p/a.rs"}})).await;
@@ -881,6 +888,7 @@ mod tests {
         call(&app, "POST", "/api/hook/event", json!({"session_id": "t1", "tool_name": "ExitPlanMode", "permission_mode": "acceptEdits", "tool_input": {}})).await;
         let (_, d) = call(&app, "GET", &format!("/api/hook/wait/{rid}"), Value::Null).await;
         assert_eq!(d["decision"], "terminal", "the waiting hook exits quietly");
+        assert_eq!(d["from_page"], false, "answered in the terminal: no focus change");
         let (_, s) = call(&app, "GET", "/api/s/t1?v=0", Value::Null).await;
         assert_eq!(s["session"]["status"], "executing");
         assert_eq!(s["session"]["approved"]["mode"], "acceptEdits");
