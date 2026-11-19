@@ -192,7 +192,9 @@ See [docs/design.md](docs/design.md) for the full design.
 | `~/.planos/config.json` `{"browser": [...]}` | Command that opens the page, for example Chrome with a profile: `{"browser": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--profile-directory=Default"]}` |
 | `PLANOS_HOME` | State directory (default `~/.planos`) |
 | `PLANOS_PORT` | Service port (default `47820`) |
-| `PLANOS_NO_BROWSER=1` | Print the page URL instead of opening a browser |
+| `~/.planos/config.json` `{"focus": false}` | Stay put: no desktop notification from the page when Claude asks, and no jump back to the terminal after you decide on the page (both on by default) |
+| `~/.planos/config.json` `{"terminal_app": "..."}` | App to bring forward after you decide on the page, when PlanOS can't tell which terminal runs Claude Code (for example `"Cursor"`) |
+| `PLANOS_NO_BROWSER=1` | Print the page URL instead of opening a browser, and never move focus |
 | `PLANOS_URL_FILE=path` | Also write the page URL to this file |
 
 ## Troubleshooting

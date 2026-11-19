@@ -155,7 +155,12 @@ impl Client {
         let mut failures = 0;
         loop {
             match self.get(&format!("/api/hook/wait/{rid}"), Duration::from_secs(40)) {
-                Ok((200, v)) => return Ok(serde_json::from_value(v)?),
+                Ok((200, v)) => {
+                    if v["from_page"] == true {
+                        focus_terminal(&self.home);
+                    }
+                    return Ok(serde_json::from_value(v)?);
+                }
                 Ok((204, _)) => failures = 0,
                 Ok((404, _)) => bail!("the review was closed"),
                 Ok((code, v)) => bail!("PlanOS service answered {code}: {v}"),
@@ -182,10 +187,63 @@ fn read_response(res: Result<ureq::Response, ureq::Error>) -> Result<(u16, Value
     Ok((code, serde_json::from_str(&text).unwrap_or(Value::Null)))
 }
 
+/// `~/.planos/config.json`, or null when it is missing or broken.
+fn config(home: &std::path::Path) -> Value {
+    std::fs::read_to_string(home.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
+}
+
+/// `"focus": false` stops PlanOS moving you between the terminal and the page.
+pub fn focus_enabled(home: &std::path::Path) -> bool {
+    config(home)["focus"].as_bool().unwrap_or(true)
+}
+
+/// The terminal app Claude Code runs in, for `open`: `"terminal_app"` from
+/// the config (an app name or path), else the app that launched the shell.
+fn terminal_app(home: &std::path::Path) -> Option<(&'static str, String)> {
+    if let Some(app) = config(home)["terminal_app"].as_str() {
+        return Some(("-a", app.to_string()));
+    }
+    if let Ok(id) = std::env::var("__CFBundleIdentifier")
+        && !id.is_empty() {
+            return Some(("-b", id));
+        }
+    let id = match std::env::var("TERM_PROGRAM").ok()?.as_str() {
+        "rex" => "com.superlogical.rex",
+        "Apple_Terminal" => "com.apple.Terminal",
+        "iTerm.app" => "com.googlecode.iterm2",
+        "ghostty" => "com.mitchellh.ghostty",
+        "WezTerm" => "com.github.wez.wezterm",
+        "WarpTerminal" => "dev.warp.Warp-Stable",
+        _ => return None,
+    };
+    Some(("-b", id.to_string()))
+}
+
+/// After you decide on the page, bring Claude Code's terminal forward, and in
+/// Rex its pane too. macOS only; PLANOS_NO_BROWSER turns it off for tests.
+fn focus_terminal(home: &std::path::Path) {
+    if !cfg!(target_os = "macos") || std::env::var_os("PLANOS_NO_BROWSER").is_some() || !focus_enabled(home) {
+        return;
+    }
+    let quiet = |mut c: std::process::Command| {
+        c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let _ = c.status();
+    };
+    if let Ok(block) = std::env::var("REX_BLOCK") {
+        let mut c = std::process::Command::new("rex");
+        c.args(["focus", &block]);
+        quiet(c);
+    }
+    if let Some((flag, app)) = terminal_app(home) {
+        let mut c = std::process::Command::new("open");
+        c.args([flag, &app]);
+        quiet(c);
+    }
+}
+
 /// `~/.planos/config.json`: {"browser": ["/path/to/browser", "--flag"]}
 fn browser_command(home: &std::path::Path) -> Option<Vec<String>> {
-    let text = std::fs::read_to_string(home.join("config.json")).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
+    let v = config(home);
     let argv: Vec<String> = v["browser"].as_array()?.iter().filter_map(|a| a.as_str().map(str::to_string)).collect();
     (!argv.is_empty()).then_some(argv)
 }

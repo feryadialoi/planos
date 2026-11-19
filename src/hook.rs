@@ -248,6 +248,11 @@ mod tests {
         assert_eq!(d, Decision::Approve { mode: "auto".into() });
         let d: Decision = serde_json::from_str(r#"{"decision":"terminal"}"#).unwrap();
         assert_eq!(d, Decision::Terminal);
+        // The service adds `from_page` to what a waiting hook reads.
+        let d: Decision = serde_json::from_str(r#"{"decision":"terminal","from_page":true}"#).unwrap();
+        assert_eq!(d, Decision::Terminal);
+        let d: Decision = serde_json::from_str(r#"{"decision":"approve","mode":"auto","from_page":true}"#).unwrap();
+        assert_eq!(d, Decision::Approve { mode: "auto".into() });
     }
 
     #[test]

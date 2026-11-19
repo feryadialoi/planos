@@ -22,11 +22,13 @@ Usage:
 Environment:
   PLANOS_HOME=dir       State directory (default ~/.planos)
   PLANOS_PORT=n         Service port (default 47820)
-  PLANOS_NO_BROWSER=1   Print the page URL instead of opening a browser
+  PLANOS_NO_BROWSER=1   Print the page URL instead of opening a browser, and never move focus
   PLANOS_URL_FILE=path  Also write the page URL to this file
 
 ~/.planos/config.json can set the browser:
-  {\"browser\": [\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\", \"--profile-directory=Default\"]}";
+  {\"browser\": [\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\", \"--profile-directory=Default\"]}
+and turn off moving between the terminal and the page:
+  {\"focus\": false}";
 
 fn main() -> ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
